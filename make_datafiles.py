@@ -4,8 +4,6 @@ import hashlib
 import struct
 import subprocess
 import collections
-import tensorflow as tf
-from tensorflow.core.example import example_pb2
 
 
 dm_single_close_quote = u'\u2019' # unicode
@@ -141,64 +139,63 @@ def get_art_abs(story_file):
   # Make article into a single string
   article = ' '.join(article_lines)
 
-  # Make abstract into a signle string, putting <s> and </s> tags around the sentences
-  abstract = ' '.join(["%s %s %s" % (SENTENCE_START, sent, SENTENCE_END) for sent in highlights])
+  # No tag
+  abstract = ' '.join(highlights)
 
   return article, abstract
 
 
-def write_to_bin(url_file, out_file, makevocab=False):
+def write_to_bin(url_file, out_article_file, out_abstract_file, makevocab=False):
   """Reads the tokenized .story files corresponding to the urls listed in the url_file and writes them to a out_file."""
   print("Making bin file for URLs listed in %s..." % url_file)
   url_list = read_text_file(url_file)
   url_hashes = get_url_hashes(url_list)
   story_fnames = [s+".story" for s in url_hashes]
   num_stories = len(story_fnames)
+  all_article = []
+  all_abstract = []
 
   if makevocab:
     vocab_counter = collections.Counter()
 
-  with open(out_file, 'wb') as writer:
-    for idx,s in enumerate(story_fnames):
-      if idx % 1000 == 0:
-        print("Writing story %i of %i; %.2f percent done" % (idx, num_stories, float(idx)*100.0/float(num_stories)))
+  for idx,s in enumerate(story_fnames):
+    if idx % 1000 == 0:
+      print("Writing story %i of %i; %.2f percent done" % (idx, num_stories, float(idx)*100.0/float(num_stories)))
 
-      # Look in the tokenized story dirs to find the .story file corresponding to this url
-      if os.path.isfile(os.path.join(cnn_tokenized_stories_dir, s)):
-        story_file = os.path.join(cnn_tokenized_stories_dir, s)
-      elif os.path.isfile(os.path.join(dm_tokenized_stories_dir, s)):
-        story_file = os.path.join(dm_tokenized_stories_dir, s)
-      else:
-        print("Error: Couldn't find tokenized story file %s in either tokenized story directories %s and %s. Was there an error during tokenization?" % (s, cnn_tokenized_stories_dir, dm_tokenized_stories_dir))
-        # Check again if tokenized stories directories contain correct number of files
-        print("Checking that the tokenized stories directories %s and %s contain correct number of files..." % (cnn_tokenized_stories_dir, dm_tokenized_stories_dir))
-        check_num_stories(cnn_tokenized_stories_dir, num_expected_cnn_stories)
-        check_num_stories(dm_tokenized_stories_dir, num_expected_dm_stories)
-        raise Exception("Tokenized stories directories %s and %s contain correct number of files but story file %s found in neither." % (cnn_tokenized_stories_dir, dm_tokenized_stories_dir, s))
+    # Look in the tokenized story dirs to find the .story file corresponding to this url
+    if os.path.isfile(os.path.join(cnn_tokenized_stories_dir, s)):
+      story_file = os.path.join(cnn_tokenized_stories_dir, s)
+    elif os.path.isfile(os.path.join(dm_tokenized_stories_dir, s)):
+      story_file = os.path.join(dm_tokenized_stories_dir, s)
+    else:
+      print("Error: Couldn't find tokenized story file %s in either tokenized story directories %s and %s. Was there an error during tokenization?" % (s, cnn_tokenized_stories_dir, dm_tokenized_stories_dir))
+      # Check again if tokenized stories directories contain correct number of files
+      print("Checking that the tokenized stories directories %s and %s contain correct number of files..." % (cnn_tokenized_stories_dir, dm_tokenized_stories_dir))
+      check_num_stories(cnn_tokenized_stories_dir, num_expected_cnn_stories)
+      check_num_stories(dm_tokenized_stories_dir, num_expected_dm_stories)
+      raise Exception("Tokenized stories directories %s and %s contain correct number of files but story file %s found in neither." % (cnn_tokenized_stories_dir, dm_tokenized_stories_dir, s))
 
-      # Get the strings to write to .bin file
-      article, abstract = get_art_abs(story_file)
+    # Get the strings to write to .bin file
+    article, abstract = get_art_abs(story_file)
+    all_article.append(article)
+    all_abstract.append(abstract)
 
-      # Write to tf.Example
-      tf_example = example_pb2.Example()
-      tf_example.features.feature['article'].bytes_list.value.extend([article.encode()])
-      tf_example.features.feature['abstract'].bytes_list.value.extend([abstract.encode()])
-      tf_example_str = tf_example.SerializeToString()
-      str_len = len(tf_example_str)
-      writer.write(struct.pack('q', str_len))
-      writer.write(struct.pack('%ds' % str_len, tf_example_str))
+    # Write the vocab to file, if applicable
+    if makevocab:
+      art_tokens = article.split(' ')
+      abs_tokens = abstract.split(' ')
+      abs_tokens = [t for t in abs_tokens if t not in [SENTENCE_START, SENTENCE_END]] # remove these tags from vocab
+      tokens = art_tokens + abs_tokens
+      tokens = [t.strip() for t in tokens] # strip
+      tokens = [t for t in tokens if t!=""] # remove empty
+      vocab_counter.update(tokens)
 
-      # Write the vocab to file, if applicable
-      if makevocab:
-        art_tokens = article.split(' ')
-        abs_tokens = abstract.split(' ')
-        abs_tokens = [t for t in abs_tokens if t not in [SENTENCE_START, SENTENCE_END]] # remove these tags from vocab
-        tokens = art_tokens + abs_tokens
-        tokens = [t.strip() for t in tokens] # strip
-        tokens = [t for t in tokens if t!=""] # remove empty
-        vocab_counter.update(tokens)
+  with open(out_article_file, 'w') as f:
+    f.write('\n'.join(all_article))
+  with open(out_abstract_file, 'w') as f:
+    f.write('\n'.join(all_abstract))
 
-  print("Finished writing file %s\n" % out_file)
+  print("Finished writing file %s\n" % out_article_file)
 
   # write vocab to file
   if makevocab:
@@ -223,22 +220,23 @@ if __name__ == '__main__':
   dm_stories_dir = sys.argv[2]
 
   # Check the stories directories contain the correct number of .story files
-  check_num_stories(cnn_stories_dir, num_expected_cnn_stories)
-  check_num_stories(dm_stories_dir, num_expected_dm_stories)
+  #check_num_stories(cnn_stories_dir, num_expected_cnn_stories)
+  #check_num_stories(dm_stories_dir, num_expected_dm_stories)
 
   # Create some new directories
-  if not os.path.exists(cnn_tokenized_stories_dir): os.makedirs(cnn_tokenized_stories_dir)
-  if not os.path.exists(dm_tokenized_stories_dir): os.makedirs(dm_tokenized_stories_dir)
-  if not os.path.exists(finished_files_dir): os.makedirs(finished_files_dir)
+  #if not os.path.exists(cnn_tokenized_stories_dir): os.makedirs(cnn_tokenized_stories_dir)
+  #if not os.path.exists(dm_tokenized_stories_dir): os.makedirs(dm_tokenized_stories_dir)
+  #if not os.path.exists(finished_files_dir): os.makedirs(finished_files_dir)
 
   # Run stanford tokenizer on both stories dirs, outputting to tokenized stories directories
-  tokenize_stories(cnn_stories_dir, cnn_tokenized_stories_dir)
-  tokenize_stories(dm_stories_dir, dm_tokenized_stories_dir)
+  #tokenize_stories(cnn_stories_dir, cnn_tokenized_stories_dir)
+  #tokenize_stories(dm_stories_dir, dm_tokenized_stories_dir)
 
   # Read the tokenized stories, do a little postprocessing then write to bin files
-  write_to_bin(all_test_urls, os.path.join(finished_files_dir, "test.bin"))
-  write_to_bin(all_val_urls, os.path.join(finished_files_dir, "val.bin"))
-  write_to_bin(all_train_urls, os.path.join(finished_files_dir, "train.bin"), makevocab=True)
+  write_to_bin(all_test_urls, os.path.join(finished_files_dir, "test.txt.src"), os.path.join(finished_files_dir, "test.txt.tgt"))
+  write_to_bin(all_val_urls, os.path.join(finished_files_dir, "val.txt.src"), os.path.join(finished_files_dir, "val.txt.tgt"))
+  write_to_bin(all_train_urls, os.path.join(finished_files_dir, "train.txt.src"), os.path.join(finished_files_dir, "train.txt.tgt"))
 
   # Chunk the data. This splits each of train.bin, val.bin and test.bin into smaller chunks, each containing e.g. 1000 examples, and saves them in finished_files/chunks
-  chunk_all()
+  # chunk_all()
+
